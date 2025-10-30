@@ -528,7 +528,14 @@ pub enum BinOp {
     Member, PtrMember, Index,
 }
 
-pub type LocType = Located<()>;
+#[derive(Debug)]
+pub enum TypeExpr<'a> {
+    Basic(&'a str),
+    Pointer(Box<LocType<'a>>),
+    Generic(Box<[LocType<'a>]>),
+}
+
+pub type LocType<'a> = Located<TypeExpr<'a>>;
 
 pub type LocExpr<'a> = Located<Expr<'a>>;
 
@@ -540,7 +547,7 @@ pub enum Expr<'a> {
     UnOp(UnOp,Box<LocExpr<'a>>),
     BinOp(BinOp,Box<[LocExpr<'a>;2]>),
     Call(Box<LocExpr<'a>>,Box<[LocExpr<'a>]>),
-    Cast(Box<LocExpr<'a>>,LocType)
+    Cast(Box<LocExpr<'a>>,LocType<'a>)
 }
 
 pub type Bp = u32;
@@ -628,15 +635,14 @@ pub enum ParseError<'a> {
     #[error("\"{0}\" is not a recognized prefix operator")]
     NotPre(Operator),
 
-    #[error("\"{0}\" is not a recognized postfix or infix operator")]
-    NeedRight(Located<&'a str>),
-
     #[error("expected {0} found \"{1}\"")]
     Expected(&'static str,&'a str),
 
     #[error("expected {0} found EOF")]
     EarlyEOF(&'static str),
 }
+
+
 
 impl<'a> From<Located<LexError>> for Located<ParseError<'a>>{
 fn from(x: Located<LexError>) -> Self { x.fixtype() }
@@ -690,6 +696,44 @@ impl<'a> Parser<'a>{
 
         self.lexer.next()?;
         Ok(loc)
+    }
+
+    pub fn consume_name(&mut self)->ParseRes<'a,Located<&'a str>>{
+        let Some(top) =  self.lexer.peek()? else {
+            let error = ParseError::EarlyEOF("an dentifier");
+            return Err(self.end_span.with(error));
+        };
+
+        let loc = top.loc;
+        let Token::Name(name) = top.value else {
+            let found = loc.get_str(self.original_str);
+            let error = ParseError::Expected("an identfier",found);
+            return Err(loc.with(error));
+        };
+
+        self.lexer.next()?;
+        Ok(loc.with(name))
+    }
+
+    pub fn parse_type(&mut self) -> ParseRes<'a,LocType<'a>>{
+        let name = self.consume_name()?;
+        let mut current = name.map_owned(TypeExpr::Basic);
+        loop {
+            if let Some(tok) = self.try_consume("*")?{
+                let loc = tok.loc.merge(current.loc);
+                current = loc.with(TypeExpr::Pointer(current.into()));
+                continue;
+            }
+
+            // if let Some()
+            break;
+        }
+
+        return Ok(current)
+    }
+
+    pub fn parse_expr(&mut self) -> ParseRes<'a,LocExpr<'a>>{
+        self.expr_bp(0)
     }
 
 
@@ -786,8 +830,9 @@ impl<'a> Parser<'a>{
 
                     // a as Type
                     UnOp::PostCast => {
-                        // integrate your type parser here later
-                        todo!("type parser for cast expression");
+                        let ty = self.parse_type()?;
+                        let loc = ty.loc.merge(lhs.loc);
+                        lhs = loc.with(Expr::Cast(Box::new(lhs),ty));
                     }
 
                     // default: postfix op with no extra tokens
@@ -861,7 +906,7 @@ fn main() {
 
         let mut parser = Parser::new(trimmed);
 
-        match parser.expr_bp(0) {
+        match parser.parse_expr() {
             Ok(expr) => {
                 println!("✅ Parsed successfully: {:#?}", expr.value);
             }
