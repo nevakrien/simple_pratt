@@ -601,7 +601,7 @@ pub struct Arg<'a>{
 pub struct Func<'a>{
     pub name:Located<&'a str>,
     pub output:Option<LocType<'a>>,//including ->
-    pub inputs:Located<Box<[LocType<'a>]>>,
+    pub inputs:Located<Box<[Arg<'a>]>>,
     pub body:Option<LocBlock<'a>>,
     
     // fn|cfn ...   
@@ -1058,11 +1058,14 @@ impl<'a> Parser<'a>{
         }
     }
 
-    pub fn parse_function_inputs(&mut self)->ParseRes<'a,Located<Box<[LocType<'a>]>>>{
+    pub fn parse_function_inputs(&mut self)->ParseRes<'a,Located<Box<[Arg<'a>]>>>{
         let start = self.consume("(")?;
         let mut parts = Vec::new();
         while !self.starts_with(")")?{
-            parts.push(self.parse_type()?);
+            let ty = self.parse_type()?;
+            let name = self.consume_name()?;
+            
+            parts.push(Arg{name,ty});
             if self.try_consume(",")?.is_none() {
                 break;
             };
@@ -1145,14 +1148,82 @@ pub fn report_parse_error<'a>(
 
 use std::io::{self, Write};
 
+// fn main() {
+//     println!("🦀 simple_pratt REPL — enter expressions, Ctrl+D to exit");
+
+//     let stdin = io::stdin();
+//     let mut input = String::new();
+
+//     loop {
+//         print!("> ");
+//         io::stdout().flush().unwrap();
+//         input.clear();
+
+//         if stdin.read_line(&mut input).unwrap() == 0 {
+//             break;
+//         }
+
+//         if input.trim().is_empty() {
+//             continue;
+//         }
+
+//         let src = Source::from(input.clone());
+
+//         let mut parser = Parser::new(src.text());
+
+//         match parser.parse_define() {
+//             Ok(x) => {
+//                 println!("✅ Parsed successfully: {:#?}", x.value);
+//             }
+//             Err(err) => {
+//                 println!("❌ Parse error:\n");
+//                 report_parse_error("<repl>", &src, &err);
+//             }
+//         }
+//     }
+
+//     println!("bye 👋");
+// }
+
+
 fn main() {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Mode {
+        Expr,
+        Stmt,
+        Def,
+    }
+
+    impl Mode {
+        fn name(&self) -> &'static str {
+            match self {
+                Mode::Expr => "expr",
+                Mode::Stmt => "stmt",
+                Mode::Def  => "def",
+            }
+        }
+
+        fn from_str(s: &str) -> Option<Self> {
+            match s {
+                "expr" => Some(Mode::Expr),
+                "stmt" => Some(Mode::Stmt),
+                "def"  => Some(Mode::Def),
+                _ => None,
+            }
+        }
+    }
+
     println!("🦀 simple_pratt REPL — enter expressions, Ctrl+D to exit");
+    println!("Switch mode with :mode expr|stmt|def (current = def)");
+    println!("In stmt/def mode, enter multiple lines and finish with an empty line.\n");
 
     let stdin = io::stdin();
     let mut input = String::new();
+    let mut buffer = String::new();
+    let mut mode = Mode::Def;
 
     loop {
-        print!("> ");
+        print!("[{}] > ", mode.name());
         io::stdout().flush().unwrap();
         input.clear();
 
@@ -1160,24 +1231,61 @@ fn main() {
             break;
         }
 
-        if input.trim().is_empty() {
+        // mode switch
+        if let Some(rest) = input.strip_prefix(":mode ") {
+            if let Some(new_mode) = Mode::from_str(rest.trim()) {
+                mode = new_mode;
+                buffer.clear();
+                println!("🔧 Switched to mode '{}'", mode.name());
+            } else {
+                println!("⚠️ Unknown mode '{}'", rest.trim());
+            }
             continue;
         }
 
-        let src = Source::from(input.clone());
+        let trimmed = input.trim_end();
+        let is_blank = trimmed.is_empty();
 
+        match mode {
+            Mode::Expr => {
+                if is_blank {
+                    continue;
+                }
+                run_parser(trimmed, mode);
+            }
+
+            Mode::Stmt | Mode::Def => {
+                if is_blank {
+                    if !buffer.trim().is_empty() {
+                        run_parser(&buffer, mode);
+                        buffer.clear();
+                    }
+                    continue;
+                }
+
+                buffer.push_str(&input);
+            }
+        }
+    }
+
+    println!("bye 👋");
+
+    fn run_parser(src_text: &str, mode: Mode) {
+        let src = Source::from(src_text.to_string());
         let mut parser = Parser::new(src.text());
 
-        match parser.parse_statment() {
-            Ok(x) => {
-                println!("✅ Parsed successfully: {:#?}", x.value);
-            }
+        let result = match mode {
+            Mode::Expr => parser.parse_expr().map(|x| format!("{:#?}", x.value)),
+            Mode::Stmt => parser.parse_statment().map(|x| format!("{:#?}", x.value)),
+            Mode::Def  => parser.parse_define().map(|x| format!("{:#?}", x.value)),
+        };
+
+        match result {
+            Ok(x) => println!("✅ Parsed successfully: {}", x),
             Err(err) => {
                 println!("❌ Parse error:\n");
                 report_parse_error("<repl>", &src, &err);
             }
         }
     }
-
-    println!("bye 👋");
 }
