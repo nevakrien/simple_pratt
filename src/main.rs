@@ -106,6 +106,9 @@ impl<T> DerefMut for Located<T> {
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub enum Operator {
+    //weird reserved for othe reasons
+    AtSign,
+
     // cast
     As,
 
@@ -196,6 +199,7 @@ impl Operator{
             Comma => ",",
             Semicolon => ";",
             Dot => ".",
+            Operator::AtSign => "@",
         }
     }
 }
@@ -319,7 +323,7 @@ impl<'a> Lexer<'a>{
         }
     }
 
-    fn parse_name(&mut self)->Located<Token<'a>>{
+    pub fn parse_name_raw(&mut self)->Located<Token<'a>>{
         let mut size = 0usize;
         for c in self.cur_str.chars(){
             if !(c.is_alphanumeric() || c=='_') {
@@ -439,6 +443,8 @@ impl<'a> Lexer<'a>{
         if let Some(tok) = self.try_parse_raw("->") { op!(tok, Operator::Arrow); }
 
         // single-character symbols
+        if let Some(tok) = self.try_parse_raw("@") { op!(tok, Operator::AtSign); }
+        
         if let Some(tok) = self.try_parse_raw("+") { op!(tok, Operator::Plus); }
         if let Some(tok) = self.try_parse_raw("-") { op!(tok, Operator::Minus); }
         if let Some(tok) = self.try_parse_raw("*") { op!(tok, Operator::Star); }
@@ -488,7 +494,7 @@ impl<'a> Lexer<'a>{
         }
 
         if c.is_alphabetic() || c=='_' {
-            return Ok(Some(self.parse_name()));
+            return Ok(Some(self.parse_name_raw()));
         }
         if c.is_numeric(){
             return Ok(Some(self.parse_number()?));
@@ -498,11 +504,11 @@ impl<'a> Lexer<'a>{
         Err(loc.with(LexError::UnknownChar(c)))
     }
 
-    #[inline(always)]
-    pub fn tuck(&mut self,tok:Located<Token<'a>>){
-        assert!(self.peeked.is_none());
-        self.peeked=Some(tok)
-    }
+    // #[inline(always)]
+    // pub fn tuck(&mut self,tok:Located<Token<'a>>){
+    //     assert!(self.peeked.is_none());
+    //     self.peeked=Some(tok)
+    // }
 
     // fn str_of(&self,loc:Loc)->&'a str{
     //     &self.original_str[loc.start..loc.end]
@@ -528,7 +534,7 @@ pub enum BinOp {
     Member, PtrMember, Index,
 }
 
-#[derive(Debug)]
+#[derive(Debug,PartialEq)]
 pub enum TypeExpr<'a> {
     Basic(&'a str),
     Pointer(Box<LocType<'a>>),
@@ -568,21 +574,7 @@ pub struct While<'a>{
 #[derive(Debug)]
 pub struct Block<'a>(pub Box<[LocStmt<'a>]>);
 
-#[derive(Debug,Clone,Copy,PartialEq,Eq,Hash)]
-pub enum CallingConv {
-    Fast,
-    C,
-    // Haskell,//can be done with llvm
-}
 
-#[derive(Debug)]
-pub struct Func<'a>{
-    pub name:Located<&'a str>,
-    pub output:LocType<'a>,
-    pub inputs:Box<[LocType<'a>]>,
-    pub body:Option<LocBlock<'a>>,
-    pub cc:CallingConv,
-}
 
 #[derive(Debug)]
 pub enum Statment<'a> {
@@ -590,8 +582,41 @@ pub enum Statment<'a> {
     If(If<'a>),
     While(While<'a>),
     Block(Block<'a>),
+}
+
+#[derive(Debug,Clone,PartialEq)]
+pub struct Attr<'a>{
+    pub name:&'a str,//without the @
+    pub full_loc:Loc, 
+}
+
+#[derive(Debug,PartialEq)]
+pub struct Arg<'a>{
+    pub name:Located<&'a str>,
+    pub ty:LocType<'a>, 
+}
+
+
+#[derive(Debug)]
+pub struct Func<'a>{
+    pub name:Located<&'a str>,
+    pub output:Option<LocType<'a>>,//including ->
+    pub inputs:Located<Box<[LocType<'a>]>>,
+    pub body:Option<LocBlock<'a>>,
+    
+    // fn|cfn ...   
+    pub def_site:Located<&'a str>, 
+    
+    // @inline | @ something
+    pub attrs:Box<[Attr<'a>]>, 
+}
+
+#[derive(Debug)]
+pub enum Define<'a> {
     Func(Func<'a>),
 }
+
+pub type LocDef<'a> = Located<Define<'a>>;
 
 pub type Bp = u32;
 
@@ -724,6 +749,11 @@ impl<'a> Parser<'a>{
     }
 
     pub fn try_consume(&mut self,want:&str)->ParseRes<'a,Option<Loc>>{
+    //there is an easy perf win hanging here at expense of usibility
+    //if we asked for an op (which we could do by string as well)
+    //then we could do a diirect byte comparison
+    //which saves us some arithmetic
+
         let Some(top) =  self.lexer.peek()? else {
             return Ok(None)
         };
@@ -734,7 +764,7 @@ impl<'a> Parser<'a>{
             return Ok(None)
         }
 
-        self.lexer.next()?;
+        _ = self.lexer.next();
         Ok(Some(loc))
     }
 
@@ -751,7 +781,7 @@ impl<'a> Parser<'a>{
             return Err(loc.with(error));
         }
 
-        self.lexer.next()?;
+        _ = self.lexer.next();
         Ok(loc)
     }
 
@@ -996,6 +1026,96 @@ impl<'a> Parser<'a>{
 
         self.parse_basic_stmt()
     }
+
+
+    pub fn try_attr(&mut self) -> ParseRes<'a,Option<Attr<'a>>>{
+        let Some(start) = self.try_consume("@")? else{
+            return Ok(None);
+        };
+
+        let rest = self.consume_name()?;
+
+        let full_loc = start.merge(rest.loc);
+        Ok(Some(Attr{full_loc,name:rest.value}))
+    }
+
+    pub fn try_function_start(&mut self) -> ParseRes<'a,Option<Located<&'a str>>>{
+        let Some(tok) = self.lexer.peek()? else {
+            return Ok(None)
+        };
+
+        let loc = tok.loc;
+        let Token::Name(name) = tok.value else {
+            return Ok(None)
+        };
+
+        match name {
+            "fn" | "cfn" | "hotfn" | "coldfn" => {
+                _=self.lexer.next();
+                Ok(Some(loc.with(name)))
+            },
+            _=>Ok(None)
+        }
+    }
+
+    pub fn parse_function_inputs(&mut self)->ParseRes<'a,Located<Box<[LocType<'a>]>>>{
+        let start = self.consume("(")?;
+        let mut parts = Vec::new();
+        while !self.starts_with(")")?{
+            parts.push(self.parse_type()?);
+            if self.try_consume(",")?.is_none() {
+                break;
+            };
+        }
+
+        let end = self.consume(")")?;
+        let loc = start.merge(end);
+        Ok(loc.with(parts.into()))
+    }
+
+    // pub fn parse_func_args(&mut)
+    pub fn parse_define(&mut self)-> ParseRes<'a,LocDef<'a>>{
+        let mut attrs = Vec::new();
+        while let Some(a) = self.try_attr()?{
+            attrs.push(a);
+        }
+
+        if let Some(def_site) = self.try_function_start()? {
+            let start = attrs.first().map(|a|a.full_loc).unwrap_or(def_site.loc);
+            let name = self.consume_name()?;
+            let inputs = self.parse_function_inputs()?;
+            
+            let mut output = None;
+            if let Some(out_start) = self.try_consume("->")? {
+                let ty = self.parse_type()?;
+                let loc = out_start.merge(ty.loc);
+                output=Some(loc.with(ty.value));
+            } 
+
+            let mut body = None;
+            let loc;
+            if let Some(end) = self.try_consume(";")? {
+                loc = start.merge(end);
+            }else{
+                let block = self.parse_proper_block()?;
+                loc = start.merge(block.loc);
+                body = Some(block);
+
+            }
+
+            let ans = Func{
+                name,
+                attrs: attrs.into(),
+                inputs,
+                output,
+                def_site,
+                body,
+            };
+
+            return Ok(loc.with(Define::Func(ans)))
+        }
+        todo!()
+    }
     
 }
 
@@ -1005,7 +1125,7 @@ use std::ops::Range;
 /// Pretty-print a single parse error using Ariadne.
 pub fn report_parse_error<'a>(
     file_name: &str,
-    src: &'a str,
+    src: &Source,
     err: &Located<ParseError<'a>>,
 ) {
     let range: Range<usize> = err.loc.start..err.loc.end;
@@ -1019,7 +1139,7 @@ pub fn report_parse_error<'a>(
                 .with_color(Color::Red),
         )
         .finish()
-        .print((file_name, Source::from(src)))
+        .print((file_name, src))
         .unwrap();
 }
 
@@ -1044,7 +1164,9 @@ fn main() {
             continue;
         }
 
-        let mut parser = Parser::new(&input);
+        let src = Source::from(input.clone());
+
+        let mut parser = Parser::new(src.text());
 
         match parser.parse_statment() {
             Ok(x) => {
@@ -1052,7 +1174,7 @@ fn main() {
             }
             Err(err) => {
                 println!("❌ Parse error:\n");
-                report_parse_error("<repl>", &input, &err);
+                report_parse_error("<repl>", &src, &err);
             }
         }
     }
