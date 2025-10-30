@@ -536,8 +536,8 @@ pub enum TypeExpr<'a> {
 }
 
 pub type LocType<'a> = Located<TypeExpr<'a>>;
-
 pub type LocExpr<'a> = Located<Expr<'a>>;
+pub type LocStmt<'a> = Located<Statment<'a>>;
 
 #[derive(Debug)]
 pub enum Expr<'a> {
@@ -548,6 +548,49 @@ pub enum Expr<'a> {
     BinOp(BinOp,Box<[LocExpr<'a>;2]>),
     Call(Box<LocExpr<'a>>,Box<[LocExpr<'a>]>),
     Cast(Box<LocExpr<'a>>,LocType<'a>)
+}
+
+pub type LocBlock<'a> =Located<Block<'a>>;
+
+#[derive(Debug)]
+pub struct If<'a>{
+    pub cond:LocExpr<'a>,
+    pub body:Box<LocStmt<'a>>,
+    pub else_branch:Option<Box<LocStmt<'a>>>,
+}
+
+#[derive(Debug)]
+pub struct While<'a>{
+    pub cond:LocExpr<'a>,
+    pub body:Option<Box<LocBlock<'a>>>,
+}
+
+#[derive(Debug)]
+pub struct Block<'a>(pub Box<[LocStmt<'a>]>);
+
+#[derive(Debug,Clone,Copy,PartialEq,Eq,Hash)]
+pub enum CallingConv {
+    Fast,
+    C,
+    // Haskell,//can be done with llvm
+}
+
+#[derive(Debug)]
+pub struct Func<'a>{
+    pub name:Located<&'a str>,
+    pub output:LocType<'a>,
+    pub inputs:Box<[LocType<'a>]>,
+    pub body:Option<LocBlock<'a>>,
+    pub cc:CallingConv,
+}
+
+#[derive(Debug)]
+pub enum Statment<'a> {
+    Basic(LocExpr<'a>),
+    If(If<'a>),
+    While(While<'a>),
+    Block(Block<'a>),
+    Func(Func<'a>),
 }
 
 pub type Bp = u32;
@@ -666,7 +709,21 @@ impl<'a> Parser<'a>{
             lexer:Lexer::new(original_str)
         }
     }
-    pub fn try_consume(&mut self,want:&str)->ParseRes<'a,Option<Located<&'a str>>>{
+    pub fn starts_with(&mut self,want:&str)->ParseRes<'a,bool>{
+        let Some(top) =  self.lexer.peek()? else {
+            return Ok(false)
+        };
+
+        let loc = top.loc;
+        let found = loc.get_str(self.original_str);
+        if found!=want{
+            return Ok(false)
+        }
+
+        Ok(true)
+    }
+
+    pub fn try_consume(&mut self,want:&str)->ParseRes<'a,Option<Loc>>{
         let Some(top) =  self.lexer.peek()? else {
             return Ok(None)
         };
@@ -678,7 +735,7 @@ impl<'a> Parser<'a>{
         }
 
         self.lexer.next()?;
-        Ok(Some(loc.with(found)))
+        Ok(Some(loc))
     }
 
     pub fn consume(&mut self,want:&'static str)->ParseRes<'a,Loc>{
@@ -719,8 +776,8 @@ impl<'a> Parser<'a>{
         let name = self.consume_name()?;
         let mut current = name.map_owned(TypeExpr::Basic);
         loop {
-            if let Some(tok) = self.try_consume("*")?{
-                let loc = tok.loc.merge(current.loc);
+            if let Some(loc) = self.try_consume("*")?{
+                let loc = loc.merge(current.loc);
                 current = loc.with(TypeExpr::Pointer(current.into()));
                 continue;
             }
@@ -855,6 +912,90 @@ impl<'a> Parser<'a>{
 
         Ok(lhs)
     }
+
+    pub fn parse_proper_block(&mut self)->ParseRes<'a,LocBlock<'a>>{
+        let start = self.consume("{")?;
+        let mut parts = Vec::new();
+
+        loop {
+            if let Some(loc) = self.try_consume("}")? {
+                let loc = start.merge(loc);
+                return Ok(loc.with(Block(parts.into())));
+            }
+
+            parts.push(self.parse_statment()?);
+        }
+    }
+
+    pub fn parse_basic_stmt(&mut self)->ParseRes<'a,LocStmt<'a>>{
+        let expr = self.parse_expr()?;
+        let end = self.consume(";")?;
+        let loc = expr.loc.merge(end);
+        Ok(loc.with(Statment::Basic(expr)))
+    }
+
+    pub fn parse_statment(&mut self)->ParseRes<'a,LocStmt<'a>>{
+        if self.starts_with("{")? {
+            let block = self.parse_proper_block()?;
+            return Ok(block.map_owned(Statment::Block));
+        }
+
+        if let Some(start) = self.try_consume("if")?{
+            let cond = self.parse_expr()?;
+
+            let body:Box<LocStmt>;
+            if self.starts_with("{")?{
+                let inner = self.parse_proper_block()?;
+                body=Box::new(inner.map_owned(Statment::Block));
+            }else{
+                body=Box::new(self.parse_basic_stmt()?);
+            }
+
+            let Some(_) = self.try_consume("else")? else {
+                let loc = start.merge(body.loc);
+                let _if = If{cond,body,else_branch:None};
+                return Ok(loc.with(Statment::If(_if)));
+            };
+
+            let body_else:Box<LocStmt>;
+            if self.starts_with("{")?{
+                let inner = self.parse_proper_block()?;
+                body_else=Box::new(inner.map_owned(Statment::Block));
+            }else{
+                body_else=Box::new(self.parse_basic_stmt()?);
+            }
+
+            let loc = start.merge(body_else.loc);
+            let _if = If{cond,body,else_branch:Some(body_else)};
+            return Ok(loc.with(Statment::If(_if)));
+        }
+
+        if let Some(start) = self.try_consume("while")?{
+            let cond = self.parse_expr()?;
+
+            let end:Loc;
+            let body:Option<Box<LocBlock>>;
+            if let Some(e) = self.try_consume(";")?{
+                end=e;
+                body=None;
+            }else if self.starts_with("{")?{
+                let inner = self.parse_proper_block()?;
+                end=inner.loc;
+                body=Some(Box::new(inner));
+            }else{
+                let stmt = self.parse_basic_stmt()?;
+                end =  stmt.loc;
+                let inner =Block([stmt].into());
+                body=Some(end.with(inner).into())
+            }
+
+            let w = While{cond,body};
+            let loc = start.merge(end);
+            return Ok(loc.with(Statment::While(w)));
+        }
+
+        self.parse_basic_stmt()
+    }
     
 }
 
@@ -899,20 +1040,19 @@ fn main() {
             break;
         }
 
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
+        if input.trim().is_empty() {
             continue;
         }
 
-        let mut parser = Parser::new(trimmed);
+        let mut parser = Parser::new(&input);
 
-        match parser.parse_expr() {
-            Ok(expr) => {
-                println!("✅ Parsed successfully: {:#?}", expr.value);
+        match parser.parse_statment() {
+            Ok(x) => {
+                println!("✅ Parsed successfully: {:#?}", x.value);
             }
             Err(err) => {
                 println!("❌ Parse error:\n");
-                report_parse_error("<repl>", trimmed, &err);
+                report_parse_error("<repl>", &input, &err);
             }
         }
     }
