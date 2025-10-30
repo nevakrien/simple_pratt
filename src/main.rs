@@ -464,7 +464,7 @@ impl<'a> Lexer<'a>{
         if let Some(tok) = self.try_parse_raw("]") { op!(tok, Operator::RBracket); }
         if let Some(tok) = self.try_parse_raw(",") { op!(tok, Operator::Comma); }
         if let Some(tok) = self.try_parse_raw(";") { op!(tok, Operator::Semicolon); }
-        if let Some(tok) = self.try_parse_raw(".") { op!(tok, Operator::Semicolon); }
+        if let Some(tok) = self.try_parse_raw(".") { op!(tok, Operator::Dot); }
 
         None
     }
@@ -514,7 +514,7 @@ impl<'a> Lexer<'a>{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnOp {
     Neg, Pos, Not, BitNot, Addr, Deref,
-    PostCall, PostIndex, PostMember, PostPtr, PostCast,
+    PostCall, PostIndex, PostCast,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -546,7 +546,6 @@ pub enum Expr<'a> {
 pub type Bp = u32;
 
 impl Operator {
-    /// Prefix (unary) operators: returns (UnOp, right_bp)
     pub fn get_prefix(self) -> Option<(UnOp, Bp)> {
         Some(match self {
             Operator::Plus   => (UnOp::Pos,    80),
@@ -559,21 +558,21 @@ impl Operator {
         })
     }
 
-    /// Postfix operators: returns (left_bp, UnOp)
     pub fn get_postfix(self) -> Option<(Bp, UnOp)> {
         Some(match self {
             Operator::LParen   => (90, UnOp::PostCall),
             Operator::LBracket => (90, UnOp::PostIndex),
-            Operator::Dot      => (90, UnOp::PostMember),
-            Operator::Arrow    => (90, UnOp::PostPtr),
             Operator::As       => (90, UnOp::PostCast),
             _ => return None,
         })
     }
 
-    /// Infix (binary) operators: returns (left_bp, BinOp, right_bp)
     pub fn get_infix(self) -> Option<(Bp, BinOp, Bp)> {
         Some(match self {
+            // Member access are binary postfix
+            Operator::Dot      => (90, BinOp::Member, 91),
+            Operator::Arrow    => (90, BinOp::PtrMember, 91),
+
             // Multiplicative
             Operator::Star     => (70, BinOp::Mul, 71),
             Operator::Slash    => (70, BinOp::Div, 71),
@@ -614,46 +613,6 @@ impl Operator {
     }
 }
 
-// impl Operator {
-//     pub fn prefix_bp(&self) -> Option<((), u8)> {
-//         use Operator::*;
-//         Some(match self {
-//             Plus | Minus | Bang | Tilde => ((), 70),
-//             Star | Amp => ((), 80), // deref, addr-of
-//             _ => return None,
-//         })
-//     }
-
-//     pub fn postfix_bp(&self) -> Option<(u8, ())> {
-        
-//         Some(match self {
-//             Operator::LParen   => (100, ()), // call
-//             Operator::LBracket => (100, ()), // index
-//             Operator::Dot      => (100, ()), // member
-//             Operator::Arrow    => (100, ()), // ptr member
-//             Operator::As       => (90, ()),  // cast to type
-//             _ => return None,
-//         })
-//     }
-
-//     pub fn infix_bp(&self) -> Option<(u8, u8)> {
-        
-//         Some(match self {
-//             Operator::Star | Operator::Slash | Operator::Percent => (60, 61),
-//             Operator::Plus | Operator::Minus                     => (50, 51),
-//             Operator::Shl | Operator::Shr                        => (45, 46),
-//             Operator::Lt | Operator::Le | Operator::Gt | Operator::Ge => (40, 41),
-//             Operator::EqEq | Operator::Ne                        => (38, 39),
-//             Operator::Amp                                        => (35, 36),
-//             Operator::Caret                                      => (34, 35),
-//             Operator::Pipe                                       => (33, 34),
-//             Operator::LAnd                                       => (30, 31),
-//             Operator::LOr                                        => (29, 30),
-//             Operator::Assign                                     => (10, 9),
-//             _ => return None,
-//         })
-//     }
-// }
 
 
 pub type ParseRes<'a, T> = Result<T, Located<ParseError<'a>>>;
@@ -748,20 +707,9 @@ impl<'a> Parser<'a>{
             Token::Num(x) => tok.with(Expr::IntLit(x)),
             Token::Name(x) => tok.with(Expr::Var(x)),
             Token::Str(x) => tok.loc.with(Expr::StrLit(x)),
-            Token::Op(Operator::As) => {
-                todo!()
-            }
             Token::Op(Operator::LParen) => {
                 let lhs= self.expr_bp( 0)?;
-
-                let Some(close) = self.lexer.next()? else {
-                    let loc = tok.loc.next_end();
-                    return Err(loc.with(ParseError::EarlyEOF("value")))
-                };
-                if close.value != Token::Op(Operator::RParen){
-                    let found = close.loc.get_str(self.original_str);
-                    return Err(close.with(ParseError::Expected("value",found)))
-                }
+                self.consume(")")?;
                 lhs
             },
             Token::Op(op) => {
@@ -780,11 +728,14 @@ impl<'a> Parser<'a>{
         loop {
             // Peek next token
             let Some(peek) = self.lexer.peek()? else { break };
-            let loc = peek.loc;
+            let op_loc = peek.loc;
+
 
             let op :Operator = match &peek.value {
                 Token::Op(op) => *op,
-                _ => break,
+                _ => {
+                    break;
+                },
             };
 
             // ───────────── INFIX ─────────────
@@ -793,7 +744,7 @@ impl<'a> Parser<'a>{
                     break;
                 }
 
-                let _ = self.consume(op.as_str())?;
+                self.lexer.next()?;
                 let rhs = self.expr_bp(r_bp)?;
                 let span = lhs.loc.merge(rhs.loc);
                 lhs = span.with(Expr::BinOp(bin_op, Box::new([lhs, rhs])));
@@ -802,37 +753,30 @@ impl<'a> Parser<'a>{
 
             // ───────────── POSTFIX ─────────────
             if let Some((l_bp, post_op)) = op.get_postfix() {
-                if l_bp < min_bp {
-                    break;
-                }
+                if l_bp < min_bp { break; }
 
                 // consume the operator token
                 self.lexer.next()?;
 
                 match post_op {
-                    // --- function call: f(args…) ---
+                    // f(args…)
                     UnOp::PostCall => {
                         let mut args = Vec::new();
-
                         if self.try_consume(")")?.is_none() {
                             loop {
                                 let arg = self.expr_bp(0)?;
                                 args.push(arg);
-
-                                if self.try_consume(",")?.is_some() {
-                                    continue;
-                                }
+                                if self.try_consume(",")?.is_some() { continue; }
                                 break;
                             }
                             self.consume(")")?;
                         }
-
                         let end = args.last().map(|a| a.loc.end).unwrap_or(lhs.loc.end);
                         let span = Loc { start: lhs.loc.start, end };
                         lhs = span.with(Expr::Call(Box::new(lhs), args.into_boxed_slice()));
                     }
 
-                    // --- index: a[expr] ---
+                    // a[expr]
                     UnOp::PostIndex => {
                         let rhs = self.expr_bp(0)?;
                         self.consume("]")?;
@@ -840,53 +784,22 @@ impl<'a> Parser<'a>{
                         lhs = span.with(Expr::BinOp(BinOp::Index, Box::new([lhs, rhs])));
                     }
 
-                    // --- member access: a.b ---
-                    UnOp::PostMember => {
-                        let Some(ident_tok) = self.lexer.next()? else {
-                            return Err(self.end_span.with(ParseError::EarlyEOF("identifier")));
-                        };
-
-                        let rhs = match ident_tok.value {
-                            Token::Name(name) => ident_tok.with(Expr::Var(name)),
-                            _ => {
-                                let found = ident_tok.loc.get_str(self.original_str);
-                                return Err(ident_tok.with(ParseError::Expected("identifier", found)));
-                            }
-                        };
-
-                        let span = Loc { start: lhs.loc.start, end: rhs.loc.end };
-                        lhs = span.with(Expr::BinOp(BinOp::Member, Box::new([lhs, rhs])));
-                    }
-
-                    // --- pointer member: a->b ---
-                    UnOp::PostPtr => {
-                        let Some(ident_tok) = self.lexer.next()? else {
-                            return Err(self.end_span.with(ParseError::EarlyEOF("identifier")));
-                        };
-
-                        let rhs = match ident_tok.value {
-                            Token::Name(name) => ident_tok.with(Expr::Var(name)),
-                            _ => {
-                                let found = ident_tok.loc.get_str(self.original_str);
-                                return Err(ident_tok.with(ParseError::Expected("identifier", found)));
-                            }
-                        };
-
-                        let span = Loc { start: lhs.loc.start, end: rhs.loc.end };
-                        lhs = span.with(Expr::BinOp(BinOp::PtrMember, Box::new([lhs, rhs])));
-                    }
-
-                    // --- cast: lhs as <type> ---
+                    // a as Type
                     UnOp::PostCast => {
+                        // integrate your type parser here later
                         todo!("type parser for cast expression");
                     }
 
-                    // fallback: shouldn't happen if table is correct
-                    _ => return Err(loc.with(ParseError::NotPost(op))),
+                    // default: postfix op with no extra tokens
+                    _ => {
+                        let span = Loc { start: lhs.loc.start, end: op_loc.end };
+                        lhs = span.with(Expr::UnOp(post_op, Box::new(lhs)));
+                    }
                 }
 
                 continue;
             }
+
 
             
 
