@@ -725,7 +725,7 @@ pub struct Parser<'a>{
 impl<'a> Parser<'a>{
     pub fn new(original_str:&'a str)->Self{
         let end_span = Loc {
-            start:original_str.len().saturating_sub(1),
+            start:original_str.len(),
             end:original_str.len(),
         };
         Self{
@@ -783,6 +783,21 @@ impl<'a> Parser<'a>{
 
         _ = self.lexer.next();
         Ok(loc)
+    }
+
+    pub fn ommit_expected(&mut self,want:&'static str)->Located<ParseError<'a>>{
+        match self.lexer.peek(){
+            Err(e)=>e.into(),
+            Ok(None)=>{
+                let error = ParseError::EarlyEOF(want);
+                self.end_span.with(error)
+            }
+            Ok(Some(top))=>{
+                let loc = top.loc;
+                let found = loc.get_str(self.original_str);
+                top.with(ParseError::Expected(want,found))  
+            }
+        }   
     }
 
     pub fn consume_name(&mut self)->ParseRes<'a,Located<&'a str>>{
@@ -1064,7 +1079,7 @@ impl<'a> Parser<'a>{
         while !self.starts_with(")")?{
             let ty = self.parse_type()?;
             let name = self.consume_name()?;
-            
+
             parts.push(Arg{name,ty});
             if self.try_consume(",")?.is_none() {
                 break;
@@ -1099,11 +1114,14 @@ impl<'a> Parser<'a>{
             let loc;
             if let Some(end) = self.try_consume(";")? {
                 loc = start.merge(end);
-            }else{
+            }
+            else if self.starts_with("{")? {
                 let block = self.parse_proper_block()?;
                 loc = start.merge(block.loc);
                 body = Some(block);
 
+            }else{
+                return Err(self.ommit_expected("{ or ;"))
             }
 
             let ans = Func{
