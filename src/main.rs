@@ -537,7 +537,8 @@ pub enum BinOp {
 #[derive(Debug,PartialEq)]
 pub enum TypeExpr<'a> {
     Basic(&'a str),
-    Pointer(Box<LocType<'a>>),
+    Pointer(Box<LocType<'a>>,usize),
+    Attr(Box<[Attr<'a>]>,Box<LocType<'a>>)
     // Generic(Box<[LocType<'a>]>),
 }
 
@@ -848,17 +849,36 @@ impl<'a> Parser<'a>{
     }
 
     pub fn parse_type(&mut self) -> ParseRes<'a,LocType<'a>>{
-        let name = self.consume_name()?;
-        let mut current = name.map_owned(TypeExpr::Basic);
-        loop {
-            if let Some(loc) = self.try_consume("*")?{
-                let loc = loc.merge(current.loc);
-                current = loc.with(TypeExpr::Pointer(current.into()));
-                continue;
-            }
+        let mut attrs = Vec::new();
+        while let Some(a) = self.try_attr()?{
+            attrs.push(a);
+        }
 
-            // if let Some()
-            break;
+        let mut current;
+        if let Some(start) = self.try_consume("(")?{
+            current = self.parse_type()?;
+            let end = self.consume(")")?;
+            current.loc=start.merge(end);
+        }
+        else if let Some(name) = self.try_name()?{
+            current = name.map_owned(TypeExpr::Basic);
+        }else{
+            return Err(self.ommit_expected("identfier or \"(\""))
+        }
+        if let Some(f) = attrs.first(){
+            let loc = current.loc.merge(f.full_loc);
+            current=loc.with(TypeExpr::Attr(attrs.into(),Box::new(current)));
+        }
+
+        let mut ptr_count = 0;
+        let mut loc=current.loc;
+        while let Some(end) = self.try_consume("*")?{
+            loc=loc.merge(end);
+            ptr_count+=1;
+        }
+
+        if ptr_count > 0 {
+            current = loc.with(TypeExpr::Pointer(current.into(),ptr_count));
         }
 
         return Ok(current)
@@ -1267,6 +1287,7 @@ fn main() {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Mode {
         Lex,
+        Type,
         Expr,
         Stmt,
         Def,
@@ -1277,6 +1298,7 @@ fn main() {
         fn name(&self) -> &'static str {
             match self {
                 Mode::Lex => "lex",
+                Mode::Type => "type",
                 Mode::Expr => "expr",
                 Mode::Stmt => "stmt",
                 Mode::Def  => "def",
@@ -1287,6 +1309,7 @@ fn main() {
         fn from_str(s: &str) -> Option<Self> {
             match s {
                 "lex" => Some(Mode::Lex),
+                "type"|"ty" => Some(Mode::Type),
                 "expr" => Some(Mode::Expr),
                 "stmt" => Some(Mode::Stmt),
                 "def"  => Some(Mode::Def),
@@ -1333,7 +1356,7 @@ fn main() {
         let is_blank = trimmed.is_empty();
 
         match mode {
-            Mode::Expr |  Mode::Lex => {
+            Mode::Expr | Mode::Type |  Mode::Lex => {
                 if is_blank {
                     continue;
                 }
@@ -1363,6 +1386,7 @@ fn main() {
 
         let result = match mode {
             Mode::Expr => parser.parse_expr().map(|x| format!("{:#?}", x.value)),
+            Mode::Type => parser.parse_type().map(|x| format!("{:#?}", x.value)),
             Mode::Stmt => parser.parse_statment().map(|x| format!("{:#?}", x.value)),
             Mode::Def  => parser.parse_define().map(|x| format!("{:#?}", x.value)),
             Mode::Quit => unreachable!("bug"),
