@@ -542,7 +542,7 @@ pub enum BinOp {
 #[derive(Debug,PartialEq)]
 pub enum TypeExpr<'a> {
     Basic(&'a str),
-    Pointer(Box<LocType<'a>>,usize),
+    Pointer(Box<LocType<'a>>),
     Attr(Box<[Attr<'a>]>,Box<LocType<'a>>)
     // Generic(Box<[LocType<'a>]>),
 }
@@ -883,15 +883,9 @@ impl<'a> Parser<'a>{
             current=loc.with(TypeExpr::Attr(attrs.into(),Box::new(current)));
         }
 
-        let mut ptr_count = 0;
-        let mut loc=current.loc;
         while let Some(end) = self.try_consume("*")?{
-            loc=loc.merge(end);
-            ptr_count+=1;
-        }
-
-        if ptr_count > 0 {
-            current = loc.with(TypeExpr::Pointer(current.into(),ptr_count));
+            let loc = current.loc.merge(end);
+            current = loc.with(TypeExpr::Pointer(current.into()))
         }
 
         return Ok(current)
