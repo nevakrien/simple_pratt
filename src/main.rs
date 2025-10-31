@@ -550,6 +550,8 @@ pub enum Expr<'a> {
     Var(&'a str),
     IntLit(u64),
     StrLit(String),
+    Parened(Box<LocExpr<'a>>),
+    ArrayLit(Box<[LocExpr<'a>]>),
     UnOp(UnOp,Box<LocExpr<'a>>),
     BinOp(BinOp,Box<[LocExpr<'a>;2]>),
     Call(Box<LocExpr<'a>>,Box<[LocExpr<'a>]>),
@@ -582,6 +584,11 @@ pub enum Statment<'a> {
     If(If<'a>),
     While(While<'a>),
     Block(Block<'a>),
+
+    Return(LocExpr<'a>),
+    Break,
+    Continue,
+    Goto(Located<&'a str>)
 }
 
 #[derive(Debug,Clone,PartialEq)]
@@ -877,9 +884,26 @@ impl<'a> Parser<'a>{
             Token::Name(x) => tok.with(Expr::Var(x)),
             Token::Str(x) => tok.loc.with(Expr::StrLit(x)),
             Token::Op(Operator::LParen) => {
-                let lhs= self.expr_bp( 0)?;
-                self.consume(")")?;
-                lhs
+                let inner= self.expr_bp( 0)?;
+                let end = self.consume(")")?;
+                let loc = tok.loc.merge(end);
+                loc.with(Expr::Parened(Box::new(inner)))
+            },
+            Token::Op(Operator::LBracket) => {
+                let mut parts = Vec::new();
+                let loc;
+                loop {
+                    if let Some(end) = self.try_consume("]")?{
+                        loc = tok.loc.merge(end);
+                        break;
+                    }
+                    parts.push(self.parse_expr()?);
+                    let do_next = self.try_consume(",")?.is_some();
+                    if !do_next && !self.starts_with("]")?{
+                        return Err(self.ommit_expected(", or ]"));
+                    }
+                }
+                loc.with(Expr::ArrayLit(parts.into()))
             },
             Token::Op(op) => {
                 let Some((op, r_bp)) = op.get_prefix() else{
@@ -1006,6 +1030,37 @@ impl<'a> Parser<'a>{
         if self.starts_with("{")? {
             let block = self.parse_proper_block()?;
             return Ok(block.map_owned(Statment::Block));
+        }
+
+        if let Some(start) = self.try_consume("return")?{
+            let inner = self.parse_expr()?;
+            let end = self.consume(";")?;
+            let loc = start.merge(end);
+            return Ok(loc.with(Statment::Return(inner)))
+        }
+
+        if let Some(mut loc) = self.try_consume("break")?{
+            if let Some(end) = self.try_consume(";")?{
+                loc = loc.merge(end);
+            }
+            return Ok(loc.with(Statment::Break))
+        }
+
+        if let Some(mut loc) = self.try_consume("continue")?{
+            if let Some(end) = self.try_consume(";")?{
+                loc = loc.merge(end);
+            }
+            return Ok(loc.with(Statment::Continue))
+        }
+
+        if let Some(mut loc) = self.try_consume("goto")?{
+            let name = self.consume_name()?;
+            loc=loc.merge(name.loc);
+
+            if let Some(end) = self.try_consume(";")?{
+                loc = loc.merge(end);
+            }
+            return Ok(loc.with(Statment::Goto(name)))
         }
 
         if let Some(start) = self.try_consume("if")?{
