@@ -538,7 +538,7 @@ pub enum BinOp {
 pub enum TypeExpr<'a> {
     Basic(&'a str),
     Pointer(Box<LocType<'a>>),
-    Generic(Box<[LocType<'a>]>),
+    // Generic(Box<[LocType<'a>]>),
 }
 
 pub type LocType<'a> = Located<TypeExpr<'a>>;
@@ -1314,6 +1314,7 @@ fn main() {
         Expr,
         Stmt,
         Def,
+        Quit,
     }
 
     impl Mode {
@@ -1322,6 +1323,7 @@ fn main() {
                 Mode::Expr => "expr",
                 Mode::Stmt => "stmt",
                 Mode::Def  => "def",
+                Mode::Quit  => "quit",
             }
         }
 
@@ -1330,6 +1332,7 @@ fn main() {
                 "expr" => Some(Mode::Expr),
                 "stmt" => Some(Mode::Stmt),
                 "def"  => Some(Mode::Def),
+                "q"|"quit"|"exit"  => Some(Mode::Quit),
                 _ => None,
             }
         }
@@ -1354,13 +1357,16 @@ fn main() {
         }
 
         // mode switch
-        if let Some(rest) = input.strip_prefix(":mode ") {
+        if let Some(rest) = input.strip_prefix(":") {
             if let Some(new_mode) = Mode::from_str(rest.trim()) {
                 mode = new_mode;
                 buffer.clear();
                 println!("🔧 Switched to mode '{}'", mode.name());
             } else {
                 println!("⚠️ Unknown mode '{}'", rest.trim());
+            }
+            if mode == Mode::Quit {
+                break;
             }
             continue;
         }
@@ -1386,7 +1392,8 @@ fn main() {
                 }
 
                 buffer.push_str(&input);
-            }
+            },
+            Mode::Quit => break,
         }
     }
 
@@ -1400,6 +1407,7 @@ fn main() {
             Mode::Expr => parser.parse_expr().map(|x| format!("{:#?}", x.value)),
             Mode::Stmt => parser.parse_statment().map(|x| format!("{:#?}", x.value)),
             Mode::Def  => parser.parse_define().map(|x| format!("{:#?}", x.value)),
+            Mode::Quit => unreachable!("bug"),
         };
 
         match result {
