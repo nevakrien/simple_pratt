@@ -585,7 +585,7 @@ pub enum Statment<'a> {
     While(While<'a>),
     Block(Block<'a>),
 
-    Return(LocExpr<'a>),
+    Return(Option<LocExpr<'a>>),
     Break,
     Continue,
     Goto(Located<&'a str>)
@@ -1033,8 +1033,18 @@ impl<'a> Parser<'a>{
         }
 
         if let Some(start) = self.try_consume("return")?{
-            let inner = self.parse_expr()?;
-            let end = self.consume(";")?;
+            let inner;
+            let end;
+
+            if let Some(e) = self.try_consume(";")?{
+                inner=None;
+                end=e;
+            }else{
+                inner = Some(self.parse_expr()?);
+                end = self.consume(";")?;
+            }
+            
+            
             let loc = start.merge(end);
             return Ok(loc.with(Statment::Return(inner)))
         }
