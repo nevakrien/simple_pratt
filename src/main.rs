@@ -570,7 +570,7 @@ pub struct If<'a>{
 #[derive(Debug)]
 pub struct While<'a>{
     pub cond:LocExpr<'a>,
-    pub body:Option<Box<LocBlock<'a>>>,
+    pub body:Option<Box<LocStmt<'a>>>,
 }
 
 #[derive(Debug)]
@@ -1066,28 +1066,14 @@ impl<'a> Parser<'a>{
         if let Some(start) = self.try_consume("if")?{
             let cond = self.parse_expr()?;
 
-            let body:Box<LocStmt>;
-            if self.starts_with("{")?{
-                let inner = self.parse_proper_block()?;
-                body=Box::new(inner.map_owned(Statment::Block));
-            }else{
-                body=Box::new(self.parse_basic_stmt()?);
-            }
-
+            let body = Box::new(self.parse_statment()?);
             let Some(_) = self.try_consume("else")? else {
                 let loc = start.merge(body.loc);
                 let _if = If{cond,body,else_branch:None};
                 return Ok(loc.with(Statment::If(_if)));
             };
 
-            let body_else:Box<LocStmt>;
-            if self.starts_with("{")?{
-                let inner = self.parse_proper_block()?;
-                body_else=Box::new(inner.map_owned(Statment::Block));
-            }else{
-                body_else=Box::new(self.parse_basic_stmt()?);
-            }
-
+            let body_else=Box::new(self.parse_statment()?);
             let loc = start.merge(body_else.loc);
             let _if = If{cond,body,else_branch:Some(body_else)};
             return Ok(loc.with(Statment::If(_if)));
@@ -1097,19 +1083,14 @@ impl<'a> Parser<'a>{
             let cond = self.parse_expr()?;
 
             let end:Loc;
-            let body:Option<Box<LocBlock>>;
+            let body:Option<Box<LocStmt>>;
             if let Some(e) = self.try_consume(";")?{
                 end=e;
                 body=None;
-            }else if self.starts_with("{")?{
-                let inner = self.parse_proper_block()?;
-                end=inner.loc;
-                body=Some(Box::new(inner));
             }else{
-                let stmt = self.parse_basic_stmt()?;
-                end =  stmt.loc;
-                let inner =Block([stmt].into());
-                body=Some(end.with(inner).into())
+                let inner = self.parse_statment()?;
+                end =  inner.loc;
+                body=Some(Box::new(inner))
             }
 
             let w = While{cond,body};
@@ -1311,6 +1292,7 @@ use std::io::{self, Write};
 fn main() {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Mode {
+        Lex,
         Expr,
         Stmt,
         Def,
@@ -1320,6 +1302,7 @@ fn main() {
     impl Mode {
         fn name(&self) -> &'static str {
             match self {
+                Mode::Lex => "lex",
                 Mode::Expr => "expr",
                 Mode::Stmt => "stmt",
                 Mode::Def  => "def",
@@ -1329,6 +1312,7 @@ fn main() {
 
         fn from_str(s: &str) -> Option<Self> {
             match s {
+                "lex" => Some(Mode::Lex),
                 "expr" => Some(Mode::Expr),
                 "stmt" => Some(Mode::Stmt),
                 "def"  => Some(Mode::Def),
@@ -1375,12 +1359,12 @@ fn main() {
         let is_blank = trimmed.is_empty();
 
         match mode {
-            Mode::Expr => {
+            Mode::Expr |  Mode::Lex => {
                 if is_blank {
                     continue;
                 }
                 run_parser(trimmed, mode);
-            }
+            },
 
             Mode::Stmt | Mode::Def => {
                 if is_blank {
@@ -1408,6 +1392,27 @@ fn main() {
             Mode::Stmt => parser.parse_statment().map(|x| format!("{:#?}", x.value)),
             Mode::Def  => parser.parse_define().map(|x| format!("{:#?}", x.value)),
             Mode::Quit => unreachable!("bug"),
+            Mode::Lex => {
+                use std::fmt::Write;
+
+                let mut s = String::new();
+                let res;
+                loop {
+                    match parser.lexer.next() {
+                        Ok(Some(t))=> writeln!(&mut s,"{t:#?}").unwrap(),
+                        Ok(None)=> {
+                            res=Ok(s);
+                            break;
+                        },
+                        Err(e)=>{
+                            res=Err(e.into());
+                            break;
+                        }
+                    }
+                }
+                res
+            },
+
         };
 
         match result {
