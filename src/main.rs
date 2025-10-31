@@ -1260,43 +1260,7 @@ pub fn report_parse_error<'a>(
 }
 
 use std::io::{self, Write};
-
-// fn main() {
-//     println!("🦀 simple_pratt REPL — enter expressions, Ctrl+D to exit");
-
-//     let stdin = io::stdin();
-//     let mut input = String::new();
-
-//     loop {
-//         print!("> ");
-//         io::stdout().flush().unwrap();
-//         input.clear();
-
-//         if stdin.read_line(&mut input).unwrap() == 0 {
-//             break;
-//         }
-
-//         if input.trim().is_empty() {
-//             continue;
-//         }
-
-//         let src = Source::from(input.clone());
-
-//         let mut parser = Parser::new(src.text());
-
-//         match parser.parse_define() {
-//             Ok(x) => {
-//                 println!("✅ Parsed successfully: {:#?}", x.value);
-//             }
-//             Err(err) => {
-//                 println!("❌ Parse error:\n");
-//                 report_parse_error("<repl>", &src, &err);
-//             }
-//         }
-//     }
-
-//     println!("bye 👋");
-// }
+use std::fmt::Write as FmtWrite;
 
 
 fn main() {
@@ -1403,13 +1367,12 @@ fn main() {
             Mode::Def  => parser.parse_define().map(|x| format!("{:#?}", x.value)),
             Mode::Quit => unreachable!("bug"),
             Mode::Lex => {
-                use std::fmt::Write;
 
                 let mut s = String::new();
                 let res;
                 loop {
                     match parser.lexer.next() {
-                        Ok(Some(t))=> writeln!(&mut s,"{t:#?}").unwrap(),
+                        Ok(Some(t))=> write!(&mut s,"{t:#?}  ").unwrap(),
                         Ok(None)=> {
                             res=Ok(s);
                             break;
