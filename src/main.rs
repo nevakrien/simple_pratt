@@ -149,6 +149,7 @@ pub enum Operator {
     LBracket, RBracket,
 
     Comma, Semicolon,Dot,
+    Colon,DoubleColon
 }
 
 impl Operator{
@@ -200,6 +201,8 @@ impl Operator{
             Semicolon => ";",
             Dot => ".",
             Operator::AtSign => "@",
+            Operator::Colon => ":",
+            Operator::DoubleColon => "::",
         }
     }
 }
@@ -441,9 +444,11 @@ impl<'a> Lexer<'a>{
         if let Some(tok) = self.try_parse_raw("<<") { op!(tok, Operator::Shl); }
         if let Some(tok) = self.try_parse_raw(">>") { op!(tok, Operator::Shr); }
         if let Some(tok) = self.try_parse_raw("->") { op!(tok, Operator::Arrow); }
+        if let Some(tok) = self.try_parse_raw("::") { op!(tok, Operator::DoubleColon); }
 
         // single-character symbols
         if let Some(tok) = self.try_parse_raw("@") { op!(tok, Operator::AtSign); }
+        if let Some(tok) = self.try_parse_raw(":") { op!(tok, Operator::Colon); }
         
         if let Some(tok) = self.try_parse_raw("+") { op!(tok, Operator::Plus); }
         if let Some(tok) = self.try_parse_raw("-") { op!(tok, Operator::Minus); }
@@ -577,6 +582,12 @@ pub struct While<'a>{
 #[derive(Debug)]
 pub struct Block<'a>(pub Box<[LocStmt<'a>]>);
 
+#[derive(Debug)]
+pub struct Let<'a>{
+    pub name:Located<&'a str>,
+    pub ty:Option<Box<LocType<'a>>>,
+    pub init:Option<LocExpr<'a>>,
+}
 
 
 #[derive(Debug)]
@@ -585,6 +596,8 @@ pub enum Statment<'a> {
     If(If<'a>),
     While(While<'a>),
     Block(Block<'a>),
+
+    Let(Let<'a>),
 
     Return(Option<LocExpr<'a>>),
     Break,
@@ -1050,6 +1063,26 @@ impl<'a> Parser<'a>{
         if self.starts_with("{")? {
             let block = self.parse_proper_block()?;
             return Ok(block.map_owned(Statment::Block));
+        }
+
+        if let Some(start) = self.try_consume("let")?{
+            let name = self.consume_name()?;
+            let mut ty = None;
+            let mut init = None;
+
+            if let Some(_) = self.try_consume(":")?{
+                ty = Some(Box::new(self.parse_type()?));
+            }
+
+            if let Some(_) = self.try_consume("=")?{
+                init = Some(self.parse_expr()?);
+            }
+
+            //TODO have a better fail message
+            let end = self.consume(";")?;
+            let loc = start.merge(end);
+            let ans = Let{name,ty,init};
+            return Ok(loc.with(Statment::Let(ans)))
         }
 
         if let Some(start) = self.try_consume("return")?{
