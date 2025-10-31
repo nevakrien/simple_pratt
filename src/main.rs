@@ -612,8 +612,17 @@ pub struct Func<'a>{
 }
 
 #[derive(Debug)]
+pub struct Struct<'a>{
+    pub kloc:Loc,
+    pub name:Option<Located<&'a str>>,
+    pub fields:Located<Box<[Arg<'a>]>>,
+    pub attrs:Box<[Attr<'a>]>, 
+}
+
+#[derive(Debug)]
 pub enum Define<'a> {
     Func(Func<'a>),
+    Struct(Struct<'a>),
 }
 
 pub type LocDef<'a> = Located<Define<'a>>;
@@ -798,6 +807,20 @@ impl<'a> Parser<'a>{
                 top.with(ParseError::Expected(want,found))  
             }
         }   
+    }
+
+    pub fn try_name(&mut self)->ParseRes<'a,Option<Located<&'a str>>>{
+        let Some(top) =  self.lexer.peek()? else {
+            return Ok(None)
+        };
+
+        let loc = top.loc;
+        let Token::Name(name) = top.value else {
+            return Ok(None)
+        };
+
+        self.lexer.next()?;
+        Ok(Some(loc.with(name)))
     }
 
     pub fn consume_name(&mut self)->ParseRes<'a,Located<&'a str>>{
@@ -1073,10 +1096,10 @@ impl<'a> Parser<'a>{
         }
     }
 
-    pub fn parse_function_inputs(&mut self)->ParseRes<'a,Located<Box<[Arg<'a>]>>>{
-        let start = self.consume("(")?;
+    pub fn parse_delimed_args(&mut self,start_delim:&'static str,end_delim:&'static str)->ParseRes<'a,Located<Box<[Arg<'a>]>>>{
+        let start = self.consume(start_delim)?;
         let mut parts = Vec::new();
-        while !self.starts_with(")")?{
+        while !self.starts_with(end_delim)?{
             let ty = self.parse_type()?;
             let name = self.consume_name()?;
 
@@ -1086,9 +1109,19 @@ impl<'a> Parser<'a>{
             };
         }
 
-        let end = self.consume(")")?;
+        let end = self.consume(end_delim)?;
         let loc = start.merge(end);
         Ok(loc.with(parts.into()))
+    }
+
+    #[inline(always)]
+    pub fn parse_function_inputs(&mut self)->ParseRes<'a,Located<Box<[Arg<'a>]>>>{
+        self.parse_delimed_args("(",")")
+    }
+
+    #[inline(always)]
+    pub fn parse_struct_fields(&mut self)->ParseRes<'a,Located<Box<[Arg<'a>]>>>{
+        self.parse_delimed_args("{","}")
     }
 
     // pub fn parse_func_args(&mut)
@@ -1135,7 +1168,23 @@ impl<'a> Parser<'a>{
 
             return Ok(loc.with(Define::Func(ans)))
         }
-        todo!()
+
+        if let Some(kloc) = self.try_consume("struct")?{
+            let name = self.try_name()?;
+            let fields = self.parse_struct_fields()?;
+            let start = attrs.first().map(|l|l.full_loc).unwrap_or(kloc);
+            let loc = start.merge(fields.loc);
+            let ans = Struct{
+                attrs: attrs.into(),
+                fields,
+                name,
+                kloc,
+            };
+
+            return Ok(loc.with(Define::Struct(ans)))
+        }
+
+        return Err(self.ommit_expected("\"fn\" or \"struct\" or @attr "))
     }
     
 }
