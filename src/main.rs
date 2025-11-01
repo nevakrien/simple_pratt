@@ -641,9 +641,28 @@ pub struct Struct<'a>{
 }
 
 #[derive(Debug)]
+pub struct TypeDef<'a>{
+    pub kloc:Loc,
+    pub name:Located<&'a str>,
+    pub ty: Located<TypeExpr<'a>>,
+    pub attrs:Box<[Attr<'a>]>,
+}
+
+
+#[derive(Debug)]
+pub struct Module<'a>{
+    pub kloc:Loc,
+    pub name:Located<&'a str>,
+    pub parts: Vec<LocDef<'a>>,
+    pub attrs:Box<[Attr<'a>]>,
+}
+
+#[derive(Debug)]
 pub enum Define<'a> {
     Func(Func<'a>),
     Struct(Struct<'a>),
+    Type(TypeDef<'a>),
+    Mod(Module<'a>),
 }
 
 pub type LocDef<'a> = Located<Define<'a>>;
@@ -1277,7 +1296,51 @@ impl<'a> Parser<'a>{
             return Ok(loc.with(Define::Struct(ans)))
         }
 
-        return Err(self.ommit_expected("\"fn\" or \"struct\" or @attr "))
+        if let Some(kloc) = self.try_consume("type")?{
+            let name = self.consume_name()?;
+            self.consume("=")?;
+            let ty = self.parse_type()?;
+            let end = self.consume(";")?;
+
+            let start = attrs.first().map(|l|l.full_loc).unwrap_or(kloc);
+            let loc = start.merge(end);
+            let ans = TypeDef{
+                kloc,
+                name,
+                ty,
+                attrs: attrs.into(),
+            };
+
+            return Ok(loc.with(Define::Type(ans)));
+        }
+
+        if let Some(kloc) = self.try_consume("mod")?{
+            let name = self.consume_name()?;
+            self.consume("{")?;
+            let mut loc = attrs.first().map(|l|l.full_loc).unwrap_or(kloc);
+            let mut parts = Vec::new();
+            loop {
+                if let Some(end) = self.try_consume("}")?{
+                    loc=loc.merge(end);
+                    break;
+                }
+
+                parts.push(self.parse_define()?);
+            }
+
+            let ans = Module{
+                kloc,
+                name,
+                parts,
+                attrs: attrs.into(),
+            };
+
+            return Ok(loc.with(Define::Mod(ans)));
+        }        
+
+
+
+        return Err(self.ommit_expected("\"fn\" or \"struct\" or \"type\" or \"mod\" or @attr "))
     }
     
 }
